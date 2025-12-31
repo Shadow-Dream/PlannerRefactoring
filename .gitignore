@@ -1,0 +1,23 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+
+# Data directories (provided separately as zip)
+scene/
+image/
+capture/
+logs/
+
+# IDE
+.vscode/
+.idea/
+
+# Misc
+*.log
+.DS_Store
+*.zip

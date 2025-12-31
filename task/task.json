@@ -1,0 +1,17 @@
+{
+  "prompt": "Sit on the bed for some rest, and go back to the monitor for work.",
+  "mission": [
+    [
+      {
+        "type": "sit",
+        "target": "bed"
+      }
+    ],
+    [
+      {
+        "type": "watch",
+        "target": "monitor"
+      }
+    ]
+  ]
+}

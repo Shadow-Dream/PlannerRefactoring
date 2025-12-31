@@ -1,0 +1,457 @@
+=System========================================================
+You are a state-of-the-art intelligent embodied robot. 
+
+Given a vague command, you can interpret it into a sequence of clear, executable instructions according to the scene.
+
+Definition of Clear Instruction:
+- Imperative sentence. 
+- Have exactly one verb. 
+- If the verb denotes an interactive action, it must explicitly state the object. If not stated in the origin command, you should choose one from the object list.
+- The object stated in the sentence must exists in the provided object list.
+- Make sure every verb in the original command is included in the instruction sequence.
+- Don't miss details.
+
+
+=User========================================================
+Vague Command: Jump in place. Sit, and sleep.
+
+Objects: 
+- sofa1: (5.0 ,5.0)
+- bed1: (0.0 ,5.0)
+
+Clear Instructions:
+
+=Assistant========================================================
+Jump. Sit on the sofa1. Sleep on bed1.
+
+=User========================================================
+Vague Command: Sit on the bed for some rest, and go back to the monitor for work.
+
+Objects: 
+- 1: single cabinet3, in (3.1, 4.9), containing [desk lamp1, plant container2]
+- 2: large plant container1, in (-0.8, -2.1)
+- 3: bed1, in (-0.9, 6.6), containing [mattress1]
+- 4: single cabinet2, in (-0.0, -2.3)
+- 5: cell shelf1, in (-3.4, 0.3), containing [book stack1, nature shelf trinkets1, nature shelf trinkets2, nature shelf trinkets4, nature shelf trinkets7]
+- 6: large shelf1, in (3.1, 1.9), containing [book stack2]
+- 7: simple desk1, in (-2.5, 6.3), containing [desk lamp2, monitor1]
+- 8: single cabinet1, in (-3.2, 3.5)
+- 9: bed2, in (2.3, -2.5), containing [mattress2]
+
+Clear Instructions:
+
+=Assistant========================================================
+Sit on bed1. Go to the simple desk1. Work on monitor1.
+
+=System========================================================
+You are a state-of-the-art intelligent embodied robot.
+
+You are currently standing in a scene with the following objects, and the layout of the scene is provided in the image:
+- 1: single cabinet3, in (3.1, 4.9), containing [desk lamp1, plant container2]
+- 2: large plant container1, in (-0.8, -2.1)
+- 3: bed1, in (-0.9, 6.6), containing [mattress1]
+- 4: single cabinet2, in (-0.0, -2.3)
+- 5: cell shelf1, in (-3.4, 0.3), containing [book stack1, nature shelf trinkets1, nature shelf trinkets2, nature shelf trinkets4, nature shelf trinkets7]
+- 6: large shelf1, in (3.1, 1.9), containing [book stack2]
+- 7: simple desk1, in (-2.5, 6.3), containing [desk lamp2, monitor1]
+- 8: single cabinet1, in (-3.2, 3.5)
+- 9: bed2, in (2.3, -2.5), containing [mattress2]
+
+You should perform a sequence of actions to fulfill the following instructions, step by step:
+Origin Instruction: Sit on the bed for some rest, and go back to the monitor for work.
+Refined Instruction: Sit on bed1. Go to the simple desk1. Work on monitor1.
+
+In each step, the sensor will provide you with your position, the objects you are holding, and your current states. You should decide your next action accordingly, and send the corresponding command to the controller.
+
+The available commands includes:
+1. move_to(object): Move to the specified object. The object must be in the scene. By using this command, you can change your position.
+2. start(action): Start doing the specified action. By using this command, you can add the action to your current state, which means you are doing the action.
+3. stop(action): Stop doing the specified action. By using this command, you can remove the action from your current state, which means you are no longer doing the action.
+4. end(): Call when the instruction is fulfilled.
+
+Example of actions:
+1. Jumping
+2. Leaning against wall1
+3. Taking hammer1 from toolbox1
+4. Standing on the right of table1 three meters away
+
+You should also consider the following constraints:
+- Each step you can only give one command.
+- Each action should be indivisible, which containing no more than one verb.
+- For interactive actions, you must explicitly specify the target object, as example 2, 3, 4.
+- When your current state is not empty, you can still start another action. This means you are performing multiple actions at the same time (e.g. eating snack while sitting).
+- You cannot interact with an object if your position are not close enough to it.
+- You are encouraged to directly output the command without any additional explanation.
+
+
+=User========================================================
+Position: origin (0, 0) 
+State: ["Standing on the origin."]
+Left Hand Holding: None
+Right Hand Holding: None
+
+
+=Assistant========================================================
+stop("Standing on the origin.")
+
+=User========================================================
+Command execution successful. Current state: 
+Position: origin (0.0, 0.0)
+State: []
+Left Hand Holding: None
+Right Hand Holding: None
+
+=Assistant========================================================
+move_to(bed1)
+
+=User========================================================
+Command execution successful. Current state: 
+Position: bed1 (-0.9, 6.6)
+State: []
+Left Hand Holding: None
+Right Hand Holding: None
+
+=Assistant========================================================
+start("sitting on bed1")
+
+=System========================================================
+You are a state-of-the-art intelligent embodied robot. Your id is {id}. You can interact with the scene. Before executing the interaction, you can assess the details of the interaction to perform it accurately.
+
+The interaction will be given in the following format:
+- Action: a sentence describing an interaction.
+- Target: the target object of the interaction.
+- At: Optional. The position where you perform the interaction.
+- By: Optional. The tool you use to perform the interaction.
+
+The details include:
+- Is Touch: whether the interaction requires touching the target object (either by your body or by the tool you are holding).
+- Is Long Range: whether the interaction is a long-range interaction, which means when doing the interaction, you do not need to be close to the target object.
+- Is Take: whether the interaction requires grabbing the target object and taking it away with you. 
+- Is Place: whether the interaction requires placing your holding object in a specific location. 
+- Contact Point: the joints of your body or the tools that you use to touch the target object. Can specify multiple joints or tools (e.g. you need both left and right hands to grab a large object).
+
+Constraints:
+- When touch is False, then take and place is also False, and contact point is an empty list [].
+- When touch is True, then it shouldn't be long range.
+- Available joints include: ['pelvis', 'left_foot', 'right_foot', 'left_hand', 'right_hand', 'head']
+- Available tools will be provided in the "By" field of the interaction, or held in your hands.
+- No more than two contact points. If there may be more, choose the most important two.
+- One hand cannot hold multiple objects.
+
+You are encouraged to directly output the details without any explanation.
+
+
+=User========================================================
+Interaction:
+Action: sitting on <bed1>
+Target: bed1
+
+State: You are currently holding nothing in your hands.
+
+Details:
+
+
+=Assistant========================================================
+- Is Touch: True
+- Is Long Range: False
+- Is Take: False
+- Is Place: False
+- Contact Point: ['pelvis']
+
+=Assistant========================================================
+- Is Touch: True
+- Is Long Range: False
+- Is Take: False
+- Is Place: False
+- Contact Point: ['pelvis']
+
+=Assistant========================================================
+- Is Touch: True
+- Is Long Range: False
+- Is Take: False
+- Is Place: False
+- Contact Point: ['pelvis']
+
+=System========================================================
+You're the state-of-the-art intelligent embodied robot. You can interact with the scene. When interacting with an object, you can determine what position you should stand in.
+
+The scene layout around the target object will be provided in the images, which are photos of the target object taken from different perspectives. The available positions will be marked with red circles with integer indices in the photos. In different photos, the marker with the same index represents the same spatial position.
+
+Please specify the position index where you should stand to interact with the target object. Your answer should be enclosed in >>> and <<<. 
+
+
+=User========================================================
+Target Object: bed
+
+Marker Position: 
+- Label 1 is in the left of bed. Your distance to it is 5.58
+- Label 5 is in the right of bed. Your distance to it is 5.93
+- Label 6 is in the front-right of bed. Your distance to it is 4.84
+- Label 7 is in the front of bed. Your distance to it is 4.20
+- Label 8 is in the front-left of bed. Your distance to it is 4.39
+
+When performing "sitting on bed", which position should you stand at?
+
+=Assistant========================================================
+To perform the action of "sitting on bed," the best position to stand at would be directly in front of the bed to facilitate easy access. Among the available positions, Label 7, which is in the front of the bed, is the most appropriate. 
+
+Thus, the answer is >>>7<<<.
+
+=User========================================================
+The image shows front view photo of bed1, which means the left of the image is the right of the bed, while the right of the image is the left of the bed.. From left to right, there are three images: the original photo, the height map, and the normal map. The height map is in a rainbow style, ranging from low to high with colors red, orange, yellow, green, cyan, blue, and purple. In the normal map, red, green, and blue represent the up-down, left-right, and front-back directions, respectively.
+
+When you are sitting on bed, which part of the bed will your pelvis contact? Please provide a noun or noun phrase (which can include adjectives and other modifiers to describe its features) as the answer.
+
+Please note that:
+- the left and right sides of the image may differ from those of the object itself. 
+
+Take your time and analyze carefully.
+
+Start by reasoning through the problem step by step before answering. Finally, wrap your answer in >>> and <<<.
+
+
+=Assistant========================================================
+To determine which part of the bed will contact your pelvis when sitting on it, we need to analyze and interpret the given images carefully.
+
+1. **Understanding the Orientation**: The prompt states that the left side of the image corresponds to the right side of the bed and vice versa. This means:
+   - The left image represents the front view where the headboard is at the back.
+   - The middle image (height map) is color-coded to show varying heights, with purple being the highest and red being the lowest.
+   - The right image represents the normal map where the red indicates the up-down direction, green indicates left-right, and blue indicates front-back.
+
+2. **Examining the Height Map**: 
+   - The height map shows a gradient where the headboard area (top of the image) is higher (indicated with colors like purple), and as we move downward toward the foot of the bed, it transitions through various colors (red being the lowest).
+   - Since we are looking for the part that our pelvis will come in contact with, we need to focus on the areas that are relatively lower (where the most contact would occur while sitting). This will likely be the flat, level surface that is in the middle of the bed, which is indicated in the height map.
+
+3. **Identifying the Contact Area**: 
+   - From the front view (left image), as you sit on the bed, your pelvis will come into contact with the middle section of the mattress where it is flat (lowest height), which is appropriate for comfort.
+   - This is usually located towards the center area of the image, accommodating both comfort and normal sitting posture.
+
+Considering all the information evaluated, the best description for the specific part of the bed that would contact your pelvis while sitting is:
+
+>>> middle section of the mattress <<<
+
+=User========================================================
+Round: 0
+
+The image shows front view photo of bed1, which means the left of the image is the right of the bed, while the right of the image is the left of the bed.. From left to right, there are three images: the original photo, the height map, and the normal map. The height map is in a rainbow style, ranging from low to high with colors red, orange, yellow, green, cyan, blue, and purple. In the normal map, red, green, and blue represent the up-down, left-right, and front-back directions, respectively.
+
+Now, let's play a game! All three images have a black-bordered, white-filled circular marker at the same position. Please determine whether this marker is located on the  middle section of the mattress , where your pelvis will contact when sitting on bed. If it is, output "Yes." If it is not, output "No" and indicate the position of the  middle section of the mattress  relative to the marker in the image, using [left, right, up, down, upper left, upper right, lower left, lower right]; for example, "No, the  middle section of the mattress  is on the left of the marker. 
+
+
+
+Please note that:
+- the left and right sides of the image may differ from those of the object itself. 
+- the question is the position of  middle section of the mattress  relative to the marker, rather than the marker relative to the  middle section of the mattress .
+- consider if the place is suitable for performing sitting on bed.
+
+Take your time and analyze carefully.
+
+Start by reasoning through the problem step by step before answering. Finally, organize your answer in the following format: >>>[yes, no], [left, right, up, down, upper left, upper right, lower left, lower right]<<<. For example:
+
+1. >>>No, left<<<
+2. >>>Yes<<<
+
+
+=Assistant========================================================
+To determine whether the marker is located on the middle section of the mattress, we first need to identify the position of the middle section of the mattress relative to the entire bed in the image.
+
+1. The original photo shows the bed from a front view. The marker is located at the center of the mattress based on its position in all three images (original photo, height map, and normal map).
+2. The "middle section" of the mattress generally refers to the area where a person would sit, which is typically around the central part of the bed.
+
+Given that the marker is exactly at the center of the bed in all three images, we can conclude the following:
+
+1. The position of the marker does coincide with the middle section of the mattress.
+2. Therefore, it would be appropriate to say that the marker is indeed located on the middle section of the mattress.
+
+Final answer:
+
+>>>Yes<<<
+
+=User========================================================
+Command execution successful. Current state: 
+Position: bed1 (-0.9, 6.6)
+State: [sitting on bed1]
+Left Hand Holding: None
+Right Hand Holding: None
+
+=Assistant========================================================
+stop("sitting on bed1")
+
+=User========================================================
+Action stoped and completed successfully.
+Position: bed1 (-0.9, 6.6)
+State: []
+Left Hand Holding: None
+Right Hand Holding: None
+
+=Assistant========================================================
+move_to(simple desk1)
+
+=User========================================================
+Command execution successful. Current state: 
+Position: simple desk1 (-2.5, 6.3)
+State: []
+Left Hand Holding: None
+Right Hand Holding: None
+
+=Assistant========================================================
+start("working on monitor1")
+
+=System========================================================
+You are a state-of-the-art intelligent embodied robot. Your id is {id}. You can interact with the scene. Before executing the interaction, you can assess the details of the interaction to perform it accurately.
+
+The interaction will be given in the following format:
+- Action: a sentence describing an interaction.
+- Target: the target object of the interaction.
+- At: Optional. The position where you perform the interaction.
+- By: Optional. The tool you use to perform the interaction.
+
+The details include:
+- Is Touch: whether the interaction requires touching the target object (either by your body or by the tool you are holding).
+- Is Long Range: whether the interaction is a long-range interaction, which means when doing the interaction, you do not need to be close to the target object.
+- Is Take: whether the interaction requires grabbing the target object and taking it away with you. 
+- Is Place: whether the interaction requires placing your holding object in a specific location. 
+- Contact Point: the joints of your body or the tools that you use to touch the target object. Can specify multiple joints or tools (e.g. you need both left and right hands to grab a large object).
+
+Constraints:
+- When touch is False, then take and place is also False, and contact point is an empty list [].
+- When touch is True, then it shouldn't be long range.
+- Available joints include: ['pelvis', 'left_foot', 'right_foot', 'left_hand', 'right_hand', 'head']
+- Available tools will be provided in the "By" field of the interaction, or held in your hands.
+- No more than two contact points. If there may be more, choose the most important two.
+- One hand cannot hold multiple objects.
+
+You are encouraged to directly output the details without any explanation.
+
+
+=User========================================================
+Interaction:
+Action: working on <monitor1>
+Target: monitor1
+
+State: You are currently holding nothing in your hands.
+
+Details:
+
+
+=Assistant========================================================
+- Is Touch: False
+- Is Long Range: True
+- Is Take: False
+- Is Place: False
+- Contact Point: []
+
+=Assistant========================================================
+- Is Touch: True
+- Is Long Range: False
+- Is Take: False
+- Is Place: False
+- Contact Point: ['left_hand']
+
+=Assistant========================================================
+- Is Touch: False
+- Is Long Range: True
+- Is Take: False
+- Is Place: False
+- Contact Point: []
+
+=Assistant========================================================
+- Is Touch: False
+- Is Long Range: True
+- Is Take: False
+- Is Place: False
+- Contact Point: []
+
+=USER========================================================
+The provided image is a bird-eye-view map of the scene. Blue markers denote the IDs of scene objects. These objects are as follows:
+
+- 1: bed2, containing [mattress2]
+- 2: single cabinet2
+- 3: large shelf1, containing [book stack2]
+- 4: cell shelf1, containing [book stack1, nature shelf trinkets1, nature shelf trinkets2, nature shelf trinkets4, nature shelf trinkets7]
+- 5: large plant container1
+- 6: single cabinet1
+- 7: simple desk1, containing [desk lamp2, monitor1]
+- 8: single cabinet3, containing [desk lamp1, plant container2]
+- 9: bed1, containing [mattress1]
+
+Red marker indicates the target object monitor1: (-2.6, 6.5), and the red arrows around it represent a series of directions:
+
+- 7: front of monitor1
+- 8: front-left of monitor1
+- 1: left of monitor1
+- 5: right of monitor1
+- 6: front-right of monitor1
+
+Green marker indicates your current position (-2.5, 6.3), which is close to the target object. You are currently doing nothing.
+
+When you are going to perform working on monitor1, should you move your current position? 
+
+If not, answer no.
+
+If you should move, please analyze which direction you should stand relative to monitor1? Please provide the arrow label corresponding to this direction, and enclose your answer in >>> and <<<.
+
+=Assistant========================================================
+Yes, you should move your current position to effectively work on monitor1. 
+
+The analysis indicates that your current position (-2.5, 6.3) is very close to monitor1 (-2.6, 6.5). The ideal position to approach monitor1 would be directly in front of it for optimal visibility and interaction.
+
+According to the provided directions, the appropriate direction to move towards monitor1 is:
+
+>>> 7 <<<
+=USER========================================================
+The provided image is a bird-eye-view map of the scene. Red markers indicate the target object monitor1, while blue markers denote the IDs of scene objects. These objects are as follows:
+
+- 1: bed2, containing [mattress2]
+- 2: single cabinet2
+- 3: large shelf1, containing [book stack2]
+- 4: cell shelf1, containing [book stack1, nature shelf trinkets1, nature shelf trinkets2, nature shelf trinkets4, nature shelf trinkets7]
+- 5: large plant container1
+- 6: single cabinet1
+- 7: simple desk1, containing [desk lamp2, monitor1]
+- 8: single cabinet3, containing [desk lamp1, plant container2]
+- 9: bed1, containing [mattress1]
+
+The green markers in the image represent a set of candidate positions, their distances to the target object monitor1 are:
+
+- 1: 1.00
+- 2: 2.00
+- 3: 3.00
+- 4: 4.00
+- 5: 5.00
+- 6: 6.00
+- 7: 7.00
+- 8: 8.00
+
+
+When you are working on monitor1, which position should you stand in? Please select the most suitable position and provide corresponding marker index. Wrap your answer with >>> and <<<.
+=Assistant========================================================
+>>>1<<<
+=USER========================================================
+The provided image is a bird-eye-view map of the scene. Red markers indicate the target object monitor1, while blue markers denote the IDs of scene objects. These objects are as follows:
+
+- 1: bed2, containing [mattress2]
+- 2: single cabinet2
+- 3: large shelf1, containing [book stack2]
+- 4: cell shelf1, containing [book stack1, nature shelf trinkets1, nature shelf trinkets2, nature shelf trinkets4, nature shelf trinkets7]
+- 5: large plant container1
+- 6: single cabinet1
+- 7: simple desk1, containing [desk lamp2, monitor1]
+- 8: single cabinet3, containing [desk lamp1, plant container2]
+- 9: bed1, containing [mattress1]
+
+The green arrows in the image represent a set of candidate facing directions, where arrow 3 is facing directly to the target object monitor1.
+
+When you are working on monitor1, which direction should you face? Please select the most suitable direction and provide corresponding arrow index. Wrap your answer with >>> and <<<.
+=Assistant========================================================
+>>>3<<<
+=User========================================================
+Command execution successful. Current state: 
+Position: simple desk1 (-2.5, 6.3)
+State: [working on monitor1]
+Left Hand Holding: None
+Right Hand Holding: None
+
+=Assistant========================================================
+end()
+
