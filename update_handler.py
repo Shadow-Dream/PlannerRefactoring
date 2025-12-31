@@ -289,12 +289,16 @@ def _follow_path(planner, env, position, target_position, merge_ongoing_prompts,
     This function:
     1. Finds the nearest segment to current position
     2. Trims path to path[i:] (removes passed segments, keeps segment start)
-    3. Sets target_state_dict to guide agent movement
+    3. Sets a nearby target along the path (not too far to ensure following the path)
     """
+    STEP_DISTANCE = 0.5  # Target distance along path per step
+
     if planner.path and len(planner.path) >= 2:
         # Step 1: Find nearest segment i (segment from path[i] to path[i+1])
         nearest_index = 0
         nearest_distance = float("inf")
+        nearest_proj_point = None
+        nearest_t = 0
 
         for i in range(len(planner.path) - 1):
             p1 = np.array(planner.path[i], dtype=np.float32)
@@ -306,6 +310,7 @@ def _follow_path(planner, env, position, target_position, merge_ongoing_prompts,
 
             if seg_len_sq < 1e-10:
                 proj_point = p1
+                t = 0
             else:
                 t = np.clip(np.dot(position[:2] - p1, seg_vec) / seg_len_sq, 0, 1)
                 proj_point = p1 + t * seg_vec
@@ -315,33 +320,82 @@ def _follow_path(planner, env, position, target_position, merge_ongoing_prompts,
             if dist_to_seg < nearest_distance:
                 nearest_distance = dist_to_seg
                 nearest_index = i
+                nearest_proj_point = proj_point
+                nearest_t = t
 
         # Step 2: Trim path = path[i:] (remove segments before current one)
         if nearest_index > 0:
             planner.path = planner.path[nearest_index:]
+            # Recalculate projection for new segment 0
+            p1 = np.array(planner.path[0], dtype=np.float32)
+            p2 = np.array(planner.path[1], dtype=np.float32)
+            seg_vec = p2 - p1
+            seg_len_sq = np.dot(seg_vec, seg_vec)
+            if seg_len_sq >= 1e-10:
+                nearest_t = np.clip(np.dot(position[:2] - p1, seg_vec) / seg_len_sq, 0, 1)
+                nearest_proj_point = p1 + nearest_t * seg_vec
 
-        # Step 3: Get target waypoint (segment end = path[1])
-        if len(planner.path) >= 2:
-            target_position = np.array(planner.path[1], dtype=np.float32)
-        else:
-            target_position = np.array(planner.path[0], dtype=np.float32)
+        # Step 3: Calculate target position along the path
+        # Start from projection point, walk STEP_DISTANCE along the path
+        remaining_dist = STEP_DISTANCE
+        current_seg_idx = 0
+        p1 = np.array(planner.path[0], dtype=np.float32)
+        p2 = np.array(planner.path[1], dtype=np.float32)
+
+        # Start from where we are on the segment
+        current_point = nearest_proj_point if nearest_proj_point is not None else p1
+
+        while remaining_dist > 0 and current_seg_idx < len(planner.path) - 1:
+            p1 = np.array(planner.path[current_seg_idx], dtype=np.float32)
+            p2 = np.array(planner.path[current_seg_idx + 1], dtype=np.float32)
+
+            dist_to_p2 = np.linalg.norm(p2 - current_point)
+
+            if dist_to_p2 <= remaining_dist:
+                # Can reach end of this segment
+                remaining_dist -= dist_to_p2
+                current_point = p2
+                current_seg_idx += 1
+            else:
+                # Target is within this segment
+                direction = p2 - current_point
+                direction = direction / np.linalg.norm(direction)
+                current_point = current_point + direction * remaining_dist
+                remaining_dist = 0
+
+        target_position = current_point
+
+        # Check if this is the final segment and we're close to the endpoint
+        is_final_segment = len(planner.path) == 2
+        final_target = np.array(planner.path[-1], dtype=np.float32)
+        dist_to_final = np.linalg.norm(position[:2] - final_target)
+
+        # If close to final target and it's the last segment, target the final point
+        if is_final_segment and dist_to_final < STEP_DISTANCE:
+            target_position = final_target
 
     elif planner.path and len(planner.path) == 1:
         target_position = np.array(planner.path[0], dtype=np.float32)
+        is_final_segment = True
+        dist_to_final = np.linalg.norm(position[:2] - target_position)
+    else:
+        # No path
+        target_position = position[:2]
+        is_final_segment = False
+        dist_to_final = 0
 
-    target_direction = target_position - position
+    target_direction = target_position - position[:2]
     target_distance = np.linalg.norm(target_direction)
 
-    # If close to current target and there are more waypoints, advance to next
-    if target_distance < 0.5 and planner.path and len(planner.path) > 2:
-        # Remove current waypoint, target the next one
+    # Advance to next waypoint if close (but not for final segment)
+    if target_distance < 0.1 and planner.path and len(planner.path) > 2:
         planner.path = planner.path[1:]
         target_position = np.array(planner.path[1], dtype=np.float32)
-        target_direction = target_position - position
+        target_direction = target_position - position[:2]
         target_distance = np.linalg.norm(target_direction)
 
     if target_distance < 1e-6:
-        target_distance = 1e-6  # Avoid division by zero
+        target_distance = 1e-6
     target_direction = target_direction / target_distance
     real_target_position = target_position
 
@@ -350,8 +404,17 @@ def _follow_path(planner, env, position, target_position, merge_ongoing_prompts,
 
     if delta_angle < np.pi / 4:
         # Walk when facing the waypoint
-        if target_distance < 0.5:
-            target_position = list(position) + [0]
+        # For final segment, walk all the way to endpoint (no 0.5m threshold)
+        if target_distance < 0.1 and not is_final_segment:
+            target_position = list(position[:2]) + [0]
+            target_position = torch.tensor(target_position, dtype=torch.float32, device=env.device)
+            planner.target_state_dict["position"] = {"traj": target_position}
+            planner.target_state_dict["velocity"] = torch.zeros_like(target_position)
+            planner.target_state_dict["heading"] = None
+            planner.prompt = merge_ongoing_prompts("standing still")
+        elif is_final_segment and dist_to_final < 0.1:
+            # Reached final destination
+            target_position = list(position[:2]) + [0]
             target_position = torch.tensor(target_position, dtype=torch.float32, device=env.device)
             planner.target_state_dict["position"] = {"traj": target_position}
             planner.target_state_dict["velocity"] = torch.zeros_like(target_position)
