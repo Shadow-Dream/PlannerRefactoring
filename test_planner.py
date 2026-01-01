@@ -102,7 +102,8 @@ log = ColorLogger()
 # Debug visualization
 # =============================================================================
 
-def render_debug_view(env, agent_pos, planner_path, frame, output_dir="logs"):
+def render_debug_view(env, agent_pos, planner_path, frame, facing_angle=0,
+                      current_prompt="", target_positions=None, output_dir="logs"):
     """Render debug view showing objects and agent position.
 
     Args:
@@ -110,6 +111,9 @@ def render_debug_view(env, agent_pos, planner_path, frame, output_dir="logs"):
         agent_pos: Agent position [x, y]
         planner_path: Current path from planner (list of [x, y])
         frame: Current frame number
+        facing_angle: Agent facing angle in radians
+        current_prompt: Current action prompt string
+        target_positions: Dict of joint target positions {joint_name: [x, y, z]}
         output_dir: Output directory for debug images
     """
     # Image settings
@@ -193,10 +197,35 @@ def render_debug_view(env, agent_pos, planner_path, frame, output_dir="logs"):
         for pt in path_pts:
             cv.circle(img, pt, 4, (0, 165, 255), -1)
 
-    # Draw agent
+    # Draw joint target positions as small blue dots
+    if target_positions:
+        for joint_name, target_pos in target_positions.items():
+            if target_pos is not None and len(target_pos) >= 2:
+                target_px = world_to_pixel(target_pos[:2])
+                cv.circle(img, target_px, 4, (255, 100, 100), -1)  # Small blue dot
+
+    # Draw agent as triangle showing facing direction
     agent_px = world_to_pixel(agent_pos)
-    cv.circle(img, agent_px, 10, (0, 0, 255), -1)  # Red filled circle
-    cv.circle(img, agent_px, 10, (0, 0, 0), 2)  # Black border
+    triangle_size = 12  # pixels
+    # Calculate triangle vertices based on facing angle
+    # Note: in pixel coords, Y is flipped, so we negate the Y component
+    front_x = agent_px[0] + int(triangle_size * 1.5 * np.cos(facing_angle))
+    front_y = agent_px[1] - int(triangle_size * 1.5 * np.sin(facing_angle))  # Negate for pixel coords
+    # Back left and right vertices (perpendicular to facing)
+    back_angle_left = facing_angle + np.pi * 2/3
+    back_angle_right = facing_angle - np.pi * 2/3
+    back_left_x = agent_px[0] + int(triangle_size * np.cos(back_angle_left))
+    back_left_y = agent_px[1] - int(triangle_size * np.sin(back_angle_left))
+    back_right_x = agent_px[0] + int(triangle_size * np.cos(back_angle_right))
+    back_right_y = agent_px[1] - int(triangle_size * np.sin(back_angle_right))
+
+    triangle_pts = np.array([
+        [front_x, front_y],
+        [back_left_x, back_left_y],
+        [back_right_x, back_right_y]
+    ], dtype=np.int32)
+    cv.fillPoly(img, [triangle_pts], (0, 0, 255))  # Red filled triangle
+    cv.polylines(img, [triangle_pts], True, (0, 0, 0), 2)  # Black border
 
     # Draw origin
     origin_px = world_to_pixel([0, 0])
@@ -211,6 +240,13 @@ def render_debug_view(env, agent_pos, planner_path, frame, output_dir="logs"):
     cv.putText(img, f"Frame: {frame}", (20, 25), cv.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
     cv.putText(img, f"Agent: ({agent_pos[0]:.2f}, {agent_pos[1]:.2f})",
                (20, 45), cv.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
+
+    # Draw current action caption
+    if current_prompt:
+        # Truncate if too long
+        display_prompt = current_prompt[:60] + "..." if len(current_prompt) > 60 else current_prompt
+        cv.putText(img, f"Action: {display_prompt}",
+                   (20, 65), cv.FONT_HERSHEY_SIMPLEX, 0.4, (150, 50, 50), 1)
 
     # Save image (overwrite, no frame number)
     os.makedirs(output_dir, exist_ok=True)
@@ -253,10 +289,10 @@ class PlannerTestRunner:
         time.sleep(1.0)
 
         # Track active actions
-        active_actions = {"Standing on the origin."}
+        active_actions = {"Standing on the origin"}
         action_frame_counter = {}
-        FRAMES_TO_COMPLETE_STAGE2 = 250
-        MOVEMENT_SPEED = 1.0  # 1 m/s
+        FRAMES_TO_COMPLETE_STAGE2 = 200  # 200 frames * 10ms = 2 seconds minimum before done
+        MOVEMENT_SPEED = 0.3  # 0.3 m/s (slower walking for better observation)
         IDLE_TIMEOUT = 1000  # frames before timeout
         DEBUG_FRAME_INTERVAL = 10  # Render debug view every N frames
         last_nav_time = time.time()
@@ -334,40 +370,78 @@ class PlannerTestRunner:
             if frame % DEBUG_FRAME_INTERVAL == 0:
                 agent_pos = env.get_agent_position(env_id)
                 path_copy = list(planner.path) if planner.path else []
-                render_debug_view(env, agent_pos, path_copy, frame)
+                facing_angle = float(env.current_facing_angle[0])
+                current_prompt = planner.prompt if hasattr(planner, 'prompt') else ""
 
-            # Send "done" requests for completed actions
-            # Only count frames after action reaches stage 2 (execution stage)
-            completed_actions = []
+                # Extract joint target positions from target_state_dict
+                target_positions = {}
+                if hasattr(planner, 'target_state_dict') and 'position' in planner.target_state_dict:
+                    pos_dict = planner.target_state_dict['position']
+                    for key, val in pos_dict.items():
+                        if val is not None:
+                            if hasattr(val, 'cpu'):
+                                target_positions[key] = val.cpu().numpy()
+                            elif isinstance(val, (list, np.ndarray)):
+                                target_positions[key] = np.array(val)
+
+                render_debug_view(env, agent_pos, path_copy, frame,
+                                facing_angle=facing_angle,
+                                current_prompt=current_prompt,
+                                target_positions=target_positions)
+
+            # Send stage_update messages to planning backend for action progress
+            # This simulates the stage updates that would come from update_handler
             for action, info in list(action_frame_counter.items()):
                 if action.startswith("Walking to "):
                     continue
 
                 start_frame = info.get("stage2_frame", info.get("start_frame", frame))
-                elapsed = frame - start_frame
-                if elapsed >= FRAMES_TO_COMPLETE_STAGE2:
+                elapsed_frames = frame - start_frame
+                elapsed_time = elapsed_frames * 0.01  # 10ms per frame
+
+                # Determine stage based on elapsed frames
+                if "stage2_frame" in info:
+                    # Action has reached stage 2 (acting)
+                    if elapsed_frames >= FRAMES_TO_COMPLETE_STAGE2:
+                        # Mark as done after completion time
+                        stage = "done"
+                        fulfilled = True
+                    else:
+                        stage = "acting"
+                        fulfilled = False
+                else:
+                    stage = "moving"
+                    fulfilled = False
+
+                # Send stage update to planning backend
+                planner.planner_request_queue.put({
+                    "type": "stage_update",
+                    "action": action,
+                    "stage": stage,
+                    "duration": elapsed_time,
+                    "fulfilled": fulfilled
+                })
+
+                # Also send "done" message when completed (for backwards compatibility)
+                if stage == "done" and action not in info.get("done_sent", set()):
                     planner.planner_request_queue.put({
                         "type": "done",
                         "content": action
                     })
-                    completed_actions.append(action)
+                    info["done_sent"] = info.get("done_sent", set()) | {action}
                     if self.verbose:
-                        log.frame(frame, f"Sent done for action: {action}")
+                        log.frame(frame, f"Action completed: {action}")
 
-            for action in completed_actions:
-                del action_frame_counter[action]
-                if action in active_actions:
-                    active_actions.remove(action)
-
-            # Initial state action
-            if frame == 1 and "Standing on the origin." in active_actions:
-                planner.planner_request_queue.put({
-                    "type": "done",
-                    "content": "Standing on the origin."
-                })
-                active_actions.remove("Standing on the origin.")
-                if self.verbose:
-                    log.frame(frame, "Sent done for initial state")
+            # Initial state action - no longer needed since planning_backend handles this
+            # The VLM will send stop("Standing on the origin") command
+            # if frame == 1 and "Standing on the origin" in active_actions:
+            #     planner.planner_request_queue.put({
+            #         "type": "done",
+            #         "content": "Standing on the origin"
+            #     })
+            #     active_actions.remove("Standing on the origin")
+            #     if self.verbose:
+            #         log.frame(frame, "Sent done for initial state")
 
             # Update planner
             planner.update(env)
@@ -381,6 +455,19 @@ class PlannerTestRunner:
                         action_frame_counter[action_name] = {"start_frame": frame}
                     if self.verbose:
                         log.frame(frame, f"New action started: {action_name}")
+
+            # Clean up actions that were stopped (removed from planner.todos)
+            current_todo_actions = {todo.get("action", "") for todo in planner.todos}
+            stopped_actions = []
+            for action in list(action_frame_counter.keys()):
+                if action not in current_todo_actions:
+                    stopped_actions.append(action)
+            for action in stopped_actions:
+                del action_frame_counter[action]
+                if action in active_actions:
+                    active_actions.remove(action)
+                if self.verbose:
+                    log.frame(frame, f"Action stopped: {action}")
 
             # Update stage2_frame when action reaches execution stage
             for todo in planner.todos:

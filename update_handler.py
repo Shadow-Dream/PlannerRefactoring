@@ -3,6 +3,7 @@ import torch
 import numpy as np
 import copy
 import re
+import time
 import shapely as sl
 from shapely import ops
 
@@ -10,6 +11,51 @@ from planner.core import quaternion
 from planner.core.action import merge_action, action_local_to_world
 from planner.utils.geometry_utils import get_convex_hull
 from planner.prompts import SURFACE_TO_JOINT
+
+
+def get_semantic_stage(act):
+    """Get semantic stage for an action.
+
+    Maps internal stages to user-facing stage names:
+    - Stage 0, 1 (navigation, turning): "moving"
+    - Stage 2 with fulfilled=False: "acting"
+    - Stage 2 with fulfilled=True: "done"
+
+    Args:
+        act: Action dict with 'stage' and optionally 'fulfilled' keys
+
+    Returns:
+        str: "moving", "acting", or "done"
+    """
+    stage = act.get("stage", 0)
+    if stage in (0, 1):
+        return "moving"
+    elif stage == 2:
+        if act.get("fulfilled", False):
+            return "done"
+        else:
+            return "acting"
+    return "acting"
+
+
+def report_stage_update(planner, act):
+    """Report stage update to the planning backend.
+
+    Args:
+        planner: LLMPlanner instance with planner_request_queue
+        act: Action dict with action info
+    """
+    semantic_stage = get_semantic_stage(act)
+    start_time = act.get("start_time", time.time())
+    duration = time.time() - start_time
+
+    planner.planner_request_queue.put({
+        "type": "stage_update",
+        "action": act["action"],
+        "stage": semantic_stage,
+        "duration": duration,
+        "fulfilled": act.get("fulfilled", False)
+    })
 
 
 def process_todos(planner, env, objects, parents, position, change_state,
@@ -20,10 +66,17 @@ def process_todos(planner, env, objects, parents, position, change_state,
         actions.append(action)
 
     def set_stage(stage):
+        old_stage = actions[0].get("stage", -1)
         actions[0]["stage"] = stage
         planner.change_state_next = True
         if stage != 0:
             clear_pending()
+
+        # Track start time and report stage changes
+        if old_stage != stage:
+            if "start_time" not in actions[0]:
+                actions[0]["start_time"] = time.time()
+            report_stage_update(planner, actions[0])
 
     def update_turn_tick():
         actions[0]["turn_tick"] = actions[0].get("turn_tick", 0) + 1
@@ -40,6 +93,8 @@ def process_todos(planner, env, objects, parents, position, change_state,
                 planner.navigating = False
             else:
                 return
+        # Record start time when action begins
+        actions[0]["start_time"] = time.time()
         set_stage(0)
 
     # Merge concurrent behaviors
@@ -964,7 +1019,12 @@ def _handle_non_touch_action(planner, env, position, action):
 
 def _check_termination(planner, env, objects, position, actions, action, target,
                       take_done, take_failed):
-    """Check termination conditions for actions."""
+    """Check termination conditions for actions.
+
+    In continuous execution mode, we only signal 'done' when actions have
+    naturally completed (e.g., object grabbed, contact made). We don't force
+    done after a fixed number of frames - the VLM decides when to stop.
+    """
     for act in actions:
         if act.get("done", False):
             continue
@@ -980,14 +1040,8 @@ def _check_termination(planner, env, objects, position, actions, action, target,
             cur_tick = act.get("tick", 0)
             act["tick"] = cur_tick + 1
 
-            if cur_tick > 240:
-                planner.has_action_done_next = act["done"] = True
-                planner.planner_request_queue.put(
-                    {"type": "done", "content": act["action"], "exceed": True}
-                )
-                if act["take"]:
-                    planner.failed = True
-
+            # Check specific termination conditions based on action type
+            # Note: We don't force done after a fixed time - VLM decides via stop()
             if act["touch"] and act["take"]:
                 _check_take_termination(planner, env, act)
             elif act["place"]:
@@ -996,12 +1050,8 @@ def _check_termination(planner, env, objects, position, actions, action, target,
                 _check_touch_termination(planner, env, objects, act, cur_tick)
             elif act["long_range"]:
                 _check_long_range_termination(planner, env, objects, act, cur_tick)
-            else:
-                if cur_tick > 120:
-                    planner.has_action_done_next = act["done"] = True
-                    planner.planner_request_queue.put(
-                        {"type": "done", "content": act["action"], "exceed": True}
-                    )
+            # Non-terminable actions (like dancing) stay in "acting" stage
+            # until VLM explicitly calls stop()
 
 
 def _check_take_termination(planner, env, act):
@@ -1028,6 +1078,8 @@ def _check_place_termination(planner, env, objects, act, cur_tick):
             act["fulfilled"] = True
             act["fulfilled_tick"] = cur_tick
             print("Place!")
+            # Report stage change to "done"
+            report_stage_update(planner, act)
 
         if act.get("fulfilled", False) and cur_tick - act.get("fulfilled_tick", cur_tick) > 30:
             planner.has_action_done_next = act["done"] = True
@@ -1089,10 +1141,10 @@ def _check_touch_termination(planner, env, objects, act, cur_tick):
             act["fulfilled"] = True
             act["fulfilled_tick"] = cur_tick
             print("Touch!")
-
-        if act.get("fulfilled", False) and cur_tick - act.get("fulfilled_tick", cur_tick) > 240:
-            planner.has_action_done_next = act["done"] = True
-            planner.planner_request_queue.put({"type": "done", "content": act["action"]})
+            # Report stage change to "done"
+            report_stage_update(planner, act)
+        # Note: In continuous execution mode, VLM observes "done" stage and calls stop()
+        # No forced termination after 240 frames - VLM decides when to stop
 
 
 def _check_long_range_termination(planner, env, objects, act, cur_tick):
@@ -1116,7 +1168,7 @@ def _check_long_range_termination(planner, env, objects, act, cur_tick):
         act["fulfilled"] = True
         act["fulfilled_tick"] = cur_tick
         print("Long Range!")
-
-    if act.get("fulfilled", False) and cur_tick - act.get("fulfilled_tick", cur_tick) > 240:
-        planner.has_action_done_next = act["done"] = True
-        planner.planner_request_queue.put({"type": "done", "content": act["action"]})
+        # Report stage change to "done"
+        report_stage_update(planner, act)
+    # Note: In continuous execution mode, VLM observes "done" stage and calls stop()
+    # No forced termination after 240 frames - VLM decides when to stop

@@ -395,14 +395,14 @@ class MockEnv:
             capture_data["rotation"] = None
 
         # Load position labels (0-7 index -> 1-8 label)
+        # Labels are already in world coordinates, don't transform
         labels = {}
         for i in range(8):
             pos_path = os.path.join(obj_path, f"{i}_tpl_position.npy")
             if os.path.exists(pos_path):
                 pos = np.load(pos_path)
-                # Convert to relative position (subtract start_point)
-                pos_relative = pos - self._start_point
-                labels[i + 1] = pos_relative.astype(np.float32)
+                # Labels are in world coordinates - use as-is
+                labels[i + 1] = pos.astype(np.float32)
         capture_data["labels"] = labels
 
         self._capture_cache[obj_name] = capture_data

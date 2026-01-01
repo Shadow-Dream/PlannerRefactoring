@@ -9,12 +9,23 @@ You should perform a sequence of actions to fulfill the following instructions, 
 Origin Instruction: origin_prompt_placeholder
 Refined Instruction: prompt_placeholder
 
-In each step, the sensor will provide you with your position, the objects you are holding, and your current states. You should decide your next action accordingly, and send the corresponding command to the controller.
+In each step, the sensor will provide you with your position, currently executing actions with their stages and durations, and the objects you are holding. You should decide your next action accordingly.
 
 The available commands includes:
-1. start(action): Start doing the specified action. By using this command, you can add the action to your current state. If the action requires interacting with a distant object, the system will automatically move you there first.
-2. stop(action): Stop doing the specified action. By using this command, you can remove the action from your current state, which means you are no longer doing the action.
-3. end(): Call when the instruction is fulfilled.
+1. start(action): Start doing the specified action. If the action requires interacting with a distant object, the system will move you there automatically.
+2. stop(action): Stop the specified action. Use this to:
+   - Remove completed actions (stage: done) from your action list
+   - Cancel actions that are stuck or taking too long
+   - Stop continuous actions like dancing when you want to proceed
+3. skip(seconds): Wait for the specified duration (default: 1 second) before next decision. Use this when actions are progressing normally.
+4. end(): Call when the instruction is fully fulfilled.
+
+Action stages:
+- moving: The agent is navigating to the target position
+- acting: The action is being executed
+- done: The action objective has been achieved (ready to stop)
+
+Note: Actions in "done" stage should be stopped with stop() command. Actions without natural completion (like "dancing") stay in "acting" stage until explicitly stopped.
 
 Example of actions:
 1. Jumping excitedly
@@ -23,22 +34,21 @@ Example of actions:
 4. Standing on the right of table1 three meters away
 5. Sitting on bed1
 
-You should also consider the following constraints:
+Constraints:
 - Each step you can only give one command.
-- Each action should be indivisible, which containing no more than one verb.
-- For interactive actions, you must explicitly specify the target object, as example 2, 3, 4, 5.
-- When your current state is not empty, you can still start another action. This means you are performing multiple actions at the same time (e.g. eating snack while sitting).
-- When you start an action that requires moving to a target object, the system will handle movement automatically.
-- You are encouraged to directly output the command without any additional explanation.
+- Each action should be indivisible (one verb only).
+- For interactive actions, explicitly specify the target object.
+- You can perform multiple actions simultaneously.
+- Output the command directly without explanation.
 """
 
-USER_EXAMPLE = """Position: origin (0, 0)
-State: ["Standing on the origin."]
+USER_EXAMPLE = """Position: origin (0.0, 0.0)
+Actions: [Standing on the origin (done, 5.0s)]
 Left Hand Holding: None
 Right Hand Holding: None
 """
 
-ASSISTANT_EXAMPLE = """stop("Standing on the origin.")"""
+ASSISTANT_EXAMPLE = """stop("Standing on the origin")"""
 
 # Error messages
 USER_FAILED_NOT_CLOSE_ENOUGH = """Command execution failed. You are performing an action that requires staying close to {close_object}. The target {target_position} of action {action_string} is too far away.

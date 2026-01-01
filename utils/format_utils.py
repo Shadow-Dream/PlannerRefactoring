@@ -71,13 +71,46 @@ def format_objects_labels(objects, object_dict, parent_labels):
     return object_string
 
 
-def format_state(state, actions):
-    """Format agent state as string."""
+def format_state(state, action_infos):
+    """Format agent state as string.
+
+    Args:
+        state: Agent state dict with position, position_name, left_slot, right_slot
+        action_infos: Dict mapping action names to info dicts with:
+            - stage: "moving" | "acting" | "done"
+            - start_time: float timestamp when action started
+            - duration: float seconds since action started (optional, computed if not present)
+
+    Returns:
+        Formatted state string with actions showing stage and duration.
+        Example: Actions: [sitting on bed1 (acting, 2.3s), looking at monitor1 (moving, 0.5s)]
+    """
+    import time
+
     position_name = state["position_name"]
     position = format_coordinate_string(state["position"])
+
+    # Format action list with stage and duration
+    action_strings = []
+    for action_name, info in action_infos.items():
+        if isinstance(info, dict):
+            stage = info.get("stage", "acting")
+            if "duration" in info:
+                duration = info["duration"]
+            elif "start_time" in info:
+                duration = time.time() - info["start_time"]
+            else:
+                duration = 0.0
+            action_strings.append(f"{action_name} ({stage}, {duration:.1f}s)")
+        else:
+            # Fallback for backward compatibility if just action object passed
+            action_strings.append(action_name)
+
+    action_list = ", ".join(action_strings)
+
     return (STATE_TEMPLATE
             ).replace("position_placeholder", f"{position_name} {position}"
-            ).replace("state_placeholder", ", ".join(actions)
+            ).replace("action_list_placeholder", action_list
             ).replace("left_slot_placeholder", str(state["left_slot"])
             ).replace("right_slot_placeholder", str(state["right_slot"]))
 

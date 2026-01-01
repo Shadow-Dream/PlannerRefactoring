@@ -148,9 +148,18 @@ class PlanningBackend:
         pseudo_take = False
         pseudo_place = False
 
+        # action_infos stores action info dicts:
+        # {action_name: {"action": HumanAction, "stage": str, "start_time": float}}
+        # Start empty - USER_EXAMPLE shows a fake "Standing on the origin" action
+        # just to teach VLM the format, but real execution starts with no actions
+        action_infos = {}
+
         # Main command loop
         while True:
-            state_string = format_state(state, action_dict.keys())
+            # Process any pending stage updates before formatting state
+            self._process_stage_updates(requests, action_infos)
+
+            state_string = format_state(state, action_infos)
             messages.append({"role": "user", "content": f"{message}\n{state_string}"})
 
             self.logger.print_role("User")
@@ -170,22 +179,24 @@ class PlanningBackend:
             if "start" in command:
                 message, pseudo_take, pseudo_place = self._handle_start(
                     command, objects, parents, state, action_dict,
-                    object_dict, last_state_position
+                    object_dict, last_state_position, action_infos
                 )
                 if action_dict:
                     last_state_position = state["position"]
             elif "stop" in command:
                 message = self._handle_stop(
                     command, requests, action_dict, state,
-                    pseudo_take, pseudo_place
+                    pseudo_take, pseudo_place, action_infos
                 )
+            elif "skip" in command:
+                message = self._handle_skip(command, requests, action_infos)
             elif "end" in command:
                 self._handle_end(requests, action_dict)
                 return
             else:
                 if "(" in command and ")" in command:
                     command = command[:command.index("(")]
-                message = f"Invalid command: '{command}', please follow the format requirements and provide a valid command (start, stop or end)"
+                message = f"Invalid command: '{command}', please follow the format requirements and provide a valid command (start, stop, skip or end)"
 
     # =========================================================================
     # Initialization methods
@@ -331,7 +342,7 @@ class PlanningBackend:
     # =========================================================================
 
     def _handle_start(self, command, objects, parents, state, action_dict,
-                     object_dict, last_state_position):
+                     object_dict, last_state_position, action_infos):
         """Handle start command using the three-stage pipeline with implicit movement.
 
         For close-range actions, this sends a preliminary action to start navigation
@@ -455,6 +466,14 @@ class PlanningBackend:
         action = self._context_to_action(context, objects)
         action_dict[context.action_string] = action
 
+        # Add to action_infos with initial stage and start time
+        action_infos[context.action_string] = {
+            "action": action,
+            "stage": "moving",  # Initial stage is moving
+            "start_time": time.time(),
+            "fulfilled": False
+        }
+
         # Send update if we sent a preliminary action, otherwise send full action
         if sent_preliminary:
             update_dict = action.serialize()
@@ -509,51 +528,34 @@ class PlanningBackend:
             "contact_targets": []
         }
 
-    def _handle_stop(self, command, requests, action_dict, state, pseudo_take, pseudo_place):
-        """Handle stop command."""
+    def _handle_stop(self, command, requests, action_dict, state, pseudo_take, pseudo_place, action_infos):
+        """Handle stop command.
+
+        In continuous execution mode, stop sends the stop signal immediately
+        without waiting for the done message. This allows the VLM to stop
+        actions proactively.
+        """
         action_string = command[command.index("(") + 1:command.index(")")]
         action_string = action_string.replace('"', '')
-        action_failed = False
 
         # Check if this action is tracked
         is_tracked_action = action_string in action_dict
 
-        while True:
-            time.sleep(0.1)
-            if len(requests) == 0:
-                if self.request_queue.empty():
-                    continue
-                request = self.request_queue.get()
-                requests.append(request)
-
-            while not self.request_queue.empty():
-                request = self.request_queue.get()
-                requests.append(request)
-
-            has_done_request = False
-            for request_index, request in enumerate(requests):
-                if request["type"] == "done" and request["content"] == action_string:
-                    has_done_request = True
-                    if is_tracked_action:
-                        action = action_dict[action_string]
-                        if action.touch and "exceed" in request:
-                            action_failed = True
-                    break
-
-            if not has_done_request:
-                continue
-
-            self.result_queue.put({"type": "stop", "action": action_string})
-            break
+        # Send stop signal immediately
+        self.result_queue.put({"type": "stop", "action": action_string})
 
         if not is_tracked_action:
             print(f"Stopping untracked action: {action_string}")
+            # Also remove from action_infos if present
+            if action_string in action_infos:
+                del action_infos[action_string]
             return "Command execution successful. Current state: "
 
         action = action_dict.pop(action_string)
 
-        if action_failed:
-            return "Action stopped, but the objective of the action do not achieved. You can retry the action or select another target, or just skip this action."
+        # Remove from action_infos
+        if action_string in action_infos:
+            del action_infos[action_string]
 
         if action.take:
             if "right_hand" in action.contact_points:
@@ -580,7 +582,7 @@ class PlanningBackend:
                 state["left_slot"] = None
 
         print("Stoping Action:", action_string)
-        return "Action stoped and completed successfully."
+        return "Action stopped successfully."
 
     def _handle_end(self, requests, action_dict):
         """Handle end command."""
@@ -613,6 +615,75 @@ class PlanningBackend:
             print("Stoping Action:", has_done_request)
 
         self.result_queue.put({"type": "complete"})
+
+    def _process_stage_updates(self, requests, action_infos):
+        """Process any pending stage update messages from the main process.
+
+        Args:
+            requests: List of pending requests
+            action_infos: Dict mapping action names to info dicts
+        """
+        # Collect all pending requests
+        while not self.request_queue.empty():
+            request = self.request_queue.get()
+            requests.append(request)
+
+        # Process stage_update messages
+        remaining_requests = []
+        for request in requests:
+            if request["type"] == "stage_update":
+                action_name = request["action"]
+                if action_name in action_infos:
+                    action_infos[action_name]["stage"] = request["stage"]
+                    action_infos[action_name]["duration"] = request["duration"]
+                    action_infos[action_name]["fulfilled"] = request["fulfilled"]
+            else:
+                remaining_requests.append(request)
+
+        # Replace requests list content
+        requests.clear()
+        requests.extend(remaining_requests)
+
+    def _handle_skip(self, command, requests, action_infos):
+        """Handle skip command - wait for specified duration.
+
+        Args:
+            command: Skip command string like 'skip(2)' or 'skip()'
+            requests: List of pending requests
+            action_infos: Dict mapping action names to info dicts
+
+        Returns:
+            Message string for next iteration
+        """
+        # Parse duration from command
+        if "(" in command and ")" in command:
+            arg = command[command.index("(") + 1:command.index(")")]
+            arg = arg.strip()
+            if arg:
+                try:
+                    duration = float(arg)
+                except ValueError:
+                    duration = 1.0
+            else:
+                duration = 1.0
+        else:
+            duration = 1.0
+
+        # Clamp duration to reasonable range
+        duration = max(0.1, min(duration, 10.0))
+
+        # Wait for the specified duration
+        time.sleep(duration)
+
+        # Collect any new requests during the wait
+        while not self.request_queue.empty():
+            request = self.request_queue.get()
+            requests.append(request)
+
+        # Process stage updates
+        self._process_stage_updates(requests, action_infos)
+
+        return f"Waited for {duration:.1f}s. Current state:"
 
     # =========================================================================
     # Helper methods

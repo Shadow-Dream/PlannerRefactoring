@@ -2,7 +2,7 @@
 
 # State display template
 STATE_TEMPLATE = """Position: position_placeholder
-State: [state_placeholder]
+Actions: [action_list_placeholder]
 Left Hand Holding: left_slot_placeholder
 Right Hand Holding: right_slot_placeholder"""
 

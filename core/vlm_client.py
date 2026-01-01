@@ -2,10 +2,24 @@
 
 For testing purposes, this client reads pre-recorded responses from
 planner/capture/response.json instead of making actual API calls.
+
+Conditional Response Syntax:
+    [IFDONE:X]response_if_done[ELSE]response_else
+
+    This checks if any action in the input is in "(done, Ys)" format
+    where Y > X seconds.
+    - If TRUE: pop response from queue, return response_if_done
+    - If FALSE: do NOT pop (stays for retry), return response_else
+
+    Example:
+        [IFDONE:2]stop("sitting on bed1")[ELSE]skip(0.5)
+        - If "sitting on bed1 (done, 3.5s)" in input → pops, returns stop()
+        - If "sitting on bed1 (acting, 1.0s)" in input → keeps, returns skip()
 """
 import os
 import json
 import time
+import re
 import threading
 
 
@@ -13,7 +27,7 @@ class VLMClient:
     """VLM client that uses pre-recorded responses from response.json."""
 
     # Simulated response delay (seconds)
-    RESPONSE_DELAY = 2.0
+    RESPONSE_DELAY = 0.5
 
     def __init__(self, env_id):
         """Initialize VLM client.
@@ -59,27 +73,65 @@ class VLMClient:
     def chat(self, messages, model="gpt-4o"):
         """Return next pre-recorded response with simulated delay.
 
-        Each call independently waits RESPONSE_DELAY seconds before returning.
-        Multiple concurrent calls will each wait independently (not queued).
+        Supports conditional responses with [IFDONE:X]...[ELSE]... syntax.
+        - If condition is TRUE: pop response, return IF branch
+        - If condition is FALSE: do NOT pop, return ELSE branch (response stays for retry)
 
         Args:
-            messages: Chat messages (logged for debugging)
+            messages: Chat messages (used for conditional evaluation)
             model: Model name (ignored)
 
         Returns:
-            Pre-recorded response string
+            Pre-recorded response string (evaluated if conditional)
         """
         # Simulate API latency - sleep BEFORE acquiring lock
-        # This allows multiple threads to sleep in parallel
         time.sleep(self.RESPONSE_DELAY)
 
         # Only lock when accessing shared response index
         with self.lock:
             if self.response_index < len(self.responses):
-                response = self.responses[self.response_index]
-                self.response_index += 1
-                print(f"[VLMClient] chat() returning response {self.response_index}/{len(self.responses)}: {response[:50]}...")
-                return response
+                raw_response = self.responses[self.response_index]
+
+                # Check if this is a conditional response
+                match = re.match(r'\[IFDONE:(\d+(?:\.\d+)?)\](.*?)\[ELSE\](.*)', raw_response, re.DOTALL)
+                if match:
+                    threshold = float(match.group(1))
+                    response_if_done = match.group(2).strip()
+                    response_else = match.group(3).strip()
+
+                    # Get the last user message content
+                    last_user_content = ""
+                    for msg in reversed(messages):
+                        if msg.get("role") == "user":
+                            last_user_content = msg.get("content", "")
+                            break
+
+                    # Find all actions with (done, Xs) pattern
+                    done_pattern = r'\(done,\s*(\d+(?:\.\d+)?)s\)'
+                    done_matches = re.findall(done_pattern, last_user_content)
+
+                    # Check if any done action exceeds threshold
+                    condition_met = False
+                    for duration_str in done_matches:
+                        duration = float(duration_str)
+                        if duration > threshold:
+                            condition_met = True
+                            break
+
+                    if condition_met:
+                        # Condition TRUE: pop response, return IF branch
+                        self.response_index += 1
+                        print(f"[VLMClient] Conditional TRUE: popping response, returning: {response_if_done[:50]}...")
+                        return response_if_done
+                    else:
+                        # Condition FALSE: do NOT pop, return ELSE branch
+                        print(f"[VLMClient] Conditional FALSE: keeping response, returning: {response_else[:50]}...")
+                        return response_else
+                else:
+                    # Non-conditional: always pop
+                    self.response_index += 1
+                    print(f"[VLMClient] chat() returning response {self.response_index}/{len(self.responses)}: {raw_response[:50]}...")
+                    return raw_response
             else:
                 print(f"[VLMClient] ERROR: No more responses! (index={self.response_index})")
                 return "ERROR: No more responses available"
