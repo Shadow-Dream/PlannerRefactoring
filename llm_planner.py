@@ -6,7 +6,6 @@ using LLM-based decision making and behavior generation.
 
 Classes:
     LLMPlanner: Main planner with LLM-based behavior generation
-    ReplayPlanner: Replay planner for recorded behaviors
 """
 
 import torch
@@ -34,7 +33,7 @@ from planner.planning import PlanningBackend
 
 
 __all__ = [
-    'LLMPlanner', 'ReplayPlanner', 'HumanAction',
+    'LLMPlanner', 'HumanAction',
     'merge_action', 'action_local_to_world',
     'is_up', 'is_down', 'is_left', 'is_right',
     'get_convex_hull', 'polygon_to_list', 'linestring_to_list'
@@ -301,56 +300,3 @@ class LLMPlanner:
             self.planner_result_queue
         )
         backend.run()
-
-
-class ReplayPlanner:
-    """Replay planner for playing back recorded behaviors."""
-
-    def __init__(self, env, env_id):
-        """Initialize the replay planner."""
-        self.record_buffer = torch.load(f"record/{env_id}.pt")
-        self.target_state_dict = {
-            "position": {"traj": torch.tensor([0, 0, 0], dtype=torch.float32, device=env.device)},
-            "velocity": None,
-            "heading": None
-        }
-        self.flush_action = False
-        self.prompt = "A person is standing still."
-
-        self.enable_lefthand_ik = False
-        self.enable_righthand_ik = False
-        self.grab_position_left = None
-        self.grab_position_right = None
-        self.left_take_target = None
-        self.right_take_target = None
-        self.left_drop_target = None
-        self.right_drop_target = None
-
-        self.frame_index = 0
-        self.failed = False
-
-    def exit(self):
-        """Clean up and exit the planner."""
-        pass
-
-    def update(self, env):
-        """Update the replay planner state."""
-        if self.frame_index >= len(self.record_buffer):
-            self.failed = True
-            return
-
-        record_frame = self.record_buffer[self.frame_index]
-
-        self.target_state_dict = record_frame["target_state_dict"]
-        self.flush_action = record_frame["flush_action"]
-        self.prompt = record_frame["prompt"]
-        self.enable_lefthand_ik = record_frame["enable_lefthand_ik"]
-        self.enable_righthand_ik = record_frame["enable_righthand_ik"]
-        self.grab_position_left = record_frame["grab_position_left"]
-        self.grab_position_right = record_frame["grab_position_right"]
-        self.left_take_target = record_frame["left_take_target"]
-        self.right_take_target = record_frame["right_take_target"]
-        self.left_drop_target = record_frame["left_drop_target"]
-        self.right_drop_target = record_frame["right_drop_target"]
-
-        self.frame_index += 1

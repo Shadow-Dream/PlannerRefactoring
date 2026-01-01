@@ -11,6 +11,46 @@ When you are performing "action_placeholder", which part of the object_placehold
 USER1_SPECIFY_TARGET_POINT_MULTIJOINTS = """
 When you are performing "action_placeholder", which parts of the object_placeholder your joint_placeholder need to contact? What is the integer identifiers of these parts in the image? Please provide the integer identifiers of the contact parts in the same order as 'joint_placeholder', and enclose each of your final answer in >>> and <<<."""
 
+# ============================================================================
+# Grid-based contact point localization prompts (single-step)
+# ============================================================================
+
+USER_GRID_CONTACT_POINT = """You are an intelligent humanoid robot performing "{action}".
+
+The image shows the {view} of the {target}. You are approaching from this viewing direction to interact with it. The image has numbered labels (1-{max_label}) overlaid as a grid, marking potential contact locations.
+
+Task: Identify where your {joint} should contact the {target}.
+
+Instructions:
+1. Analyze the {target}'s structure and identify which part your {joint} should contact.
+2. Select the numbered label closest to that contact point.
+3. The image left/right may differ from the object's actual left/right sides.
+
+Output format: First describe the structure, then identify the contact part, finally provide the label number in >>> and <<<.
+
+Example: "The <object> consists of <part A>, <part B> and <part C>. When performing <action>, my <joint> will contact with <part X>, which corresponds to label >>>N<<<."
+"""
+
+USER_GRID_CONTACT_POINT_PLACE = """You are an intelligent humanoid robot performing "{action}".
+
+The image shows the {view} of the {target}. You are approaching from this viewing direction to place {place_target} on it. The image has numbered labels (1-{max_label}) overlaid as a grid, marking potential placement locations.
+
+Task: Identify where to place {place_target} on the {target}.
+
+Instructions:
+1. Analyze the {target}'s structure and identify the appropriate surface for placing {place_target}.
+2. Select the numbered label closest to that placement point.
+3. The image left/right may differ from the object's actual left/right sides.
+
+Output format: First describe the structure, then identify the placement area, finally provide the label number in >>> and <<<.
+
+Example: "The <object> consists of <part A>, <part B> and <part C>. When placing <item>, the appropriate area is <part X>, which corresponds to label >>>N<<<."
+"""
+
+# ============================================================================
+# Legacy iterative localization prompts (kept for backward compatibility)
+# ============================================================================
+
 USER_POSITIONING_INITIAL = """The image shows {view}.
 
 When you are {action}, which part of the {target} will your {joint} contact? Please provide a noun or noun phrase (which can include adjectives and other modifiers to describe its features) as the answer.
