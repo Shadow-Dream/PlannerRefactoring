@@ -19,6 +19,7 @@ from shapely import ops
 
 from planner.core import quaternion
 from planner.prompts import SURFACE_TO_JOINT
+from planner.utils.action_logger import ActionLogger
 
 # Import utility functions for backward compatibility
 from planner.utils.text_utils import is_up, is_down, is_left, is_right
@@ -117,8 +118,14 @@ class LLMPlanner:
         self.last_action = ""
         self.last_position = None
 
+        # Action logger for detailed state tracking
+        self.action_logger = ActionLogger(env_id)
+
     def exit(self):
         """Clean up and exit the planner."""
+        # Close action logger
+        self.action_logger.close()
+
         self.planner_request_queue.close()
         self.planner_result_queue.close()
         self.navigator_request_queue.close()
@@ -190,6 +197,8 @@ class LLMPlanner:
             response = self.planner_result_queue.get()
             if response["type"] == "action":
                 self._handle_action_response(response, parents)
+            elif response["type"] == "update":
+                self._handle_update_response(response, parents)
             elif response["type"] == "capture":
                 env.is_capturing[self.env_id] = True
                 env.capture_targets[self.env_id] += response["target"]
@@ -234,17 +243,32 @@ class LLMPlanner:
         if self.flush_action:
             print("Action Flushed")
 
+        # Log current frame state to CSV
+        self.action_logger.log_frame(env, self)
+
     def _handle_action_response(self, response, parents):
         """Handle action response from planner."""
-        if response["action"].startswith("Walking to"):
-            self.need_pending = True
         if len(self.todos) > 0:
             last_action = self.todos[-1]
             last_target = last_action["at"][0] if (last_action["at"] is not None and len(last_action["at"]) > 0) else last_action["target"]
             inco_target = response["at"][0] if (response["at"] is not None and len(response["at"]) > 0) else response["target"]
+            # If same parent and last action has no position, replace it
             if last_action["position"] is None and last_target is not None and inco_target is not None and parents[last_target] == parents[inco_target]:
                 self.todos.pop(-1)
         self.todos.append(response)
+
+    def _handle_update_response(self, response, parents):
+        """Handle update response from planner - updates an existing action with full data."""
+        action_name = response["action"]
+        for action in self.todos:
+            if action["action"] == action_name:
+                # Update the existing action with new data
+                for key in response:
+                    if key != "type":
+                        action[key] = response[key]
+                return
+        # If action not found in todos, treat as new action
+        self._handle_action_response(response, parents)
 
     def _handle_stop_response(self, response):
         """Handle stop response from planner."""

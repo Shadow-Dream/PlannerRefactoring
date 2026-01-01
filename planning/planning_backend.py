@@ -167,11 +167,7 @@ class PlanningBackend:
             command = response
 
             # Execute command
-            if "move_to" in command:
-                message, pseudo_take, pseudo_place = self._handle_move_to(
-                    command, objects, parents, state, action_dict
-                )
-            elif "start" in command:
+            if "start" in command:
                 message, pseudo_take, pseudo_place = self._handle_start(
                     command, objects, parents, state, action_dict,
                     object_dict, last_state_position
@@ -334,71 +330,13 @@ class PlanningBackend:
     # Command handlers
     # =========================================================================
 
-    def _handle_move_to(self, command, objects, parents, state, action_dict):
-        """Handle move_to command."""
-        target = command[command.index("(") + 1:command.rindex(")")]
-        target = target.replace('"', '').replace("_", " ")
-
-        if target not in objects or target == "origin":
-            message = USER_FAILED_OBJECT.replace("{object_placeholder}", target)
-            return message, False, False
-
-        parent = parents[target]
-        parent_instance = objects[parent]
-        target_instance = objects[target]
-
-        # Check if can move to
-        for action_string, action in action_dict.items():
-            if self._is_holding(state, action.target):
-                continue
-
-            if action.long_range:
-                if action.glb_position is None and action.position is None:
-                    continue
-                action_position = action.position if action.glb_position is None else action.glb_position
-                action_position = np.array(action_position, dtype=np.float32)
-                distance = get_instance_position_distance(parent_instance, action_position)
-            else:
-                action_instance = objects[action.target]
-                distance = get_instance_distance(parent_instance, action_instance)
-
-            if distance > 0.5:
-                message = (USER_FAILED_MOVE
-                          .replace("{action_string}", action_string)
-                          .replace("{target}", target))
-                return message, False, False
-
-        # Update held object positions
-        if state["left_slot"] and state["left_slot"] in objects:
-            objects[state["left_slot"]]["position"] = parent_instance["position"]
-        if state["right_slot"] and state["right_slot"] in objects:
-            objects[state["right_slot"]]["position"] = parent_instance["position"]
-
-        state["position_name"] = target
-        state["position"] = format_coordinate(parent_instance["position"])
-
-        action = {
-            "type": "action",
-            "action": f"Walking to {target}",
-            "target": target,
-            "at": None,
-            "by": None,
-            "touch": None,
-            "long_range": None,
-            "facing": None,
-            "take": None,
-            "place": None,
-            "position": None,
-            "contact_points": [],
-            "contact_targets": []
-        }
-        self.result_queue.put(action)
-
-        return "Command execution successful. Current state: ", False, False
-
     def _handle_start(self, command, objects, parents, state, action_dict,
                      object_dict, last_state_position):
-        """Handle start command using the three-stage pipeline."""
+        """Handle start command using the three-stage pipeline with implicit movement.
+
+        For close-range actions, this sends a preliminary action to start navigation
+        immediately, then continues with full reasoning and sends an update.
+        """
         action_string = command[command.index("(") + 1:command.index(")")]
         action_string = action_string.replace('"', '')
 
@@ -409,6 +347,31 @@ class PlanningBackend:
             action_string=action_string
         )
 
+        # =====================================================================
+        # QUICK TARGET EXTRACTION - Send preliminary action BEFORE VLM calls
+        # =====================================================================
+        # Use HumanAction to quickly extract targets using regex (no VLM)
+        quick_action = HumanAction(action_string, objects)
+        quick_target = None
+        if len(quick_action.targets) == 1:
+            quick_target = quick_action.targets[0]
+        elif len(quick_action.targets) > 1:
+            # Multiple targets - use first one for preliminary navigation
+            # Stage 1 will determine the actual target later
+            quick_target = quick_action.targets[0]
+
+        # Send preliminary navigation action immediately if we have a target
+        sent_preliminary = False
+        if quick_target and quick_target in objects:
+            preliminary_action = self._create_quick_preliminary_action(
+                action_string, quick_target
+            )
+            self.result_queue.put(preliminary_action)
+            sent_preliminary = True
+
+        # =====================================================================
+        # STAGE 1: Full Basic Analysis (includes VLM voting)
+        # =====================================================================
         # Create stage input
         stage_input = StageInput(
             context=context,
@@ -429,27 +392,42 @@ class PlanningBackend:
         pseudo_take = context.pseudo_take
         pseudo_place = context.pseudo_place
 
-        # Handle non-interactive behavior
+        # Handle non-interactive behavior (no target)
         if context.target is None or context.target not in objects:
             if context.skip_remaining or (not context.place or not context.at or len(context.at) == 0):
                 action = self._context_to_action(context, objects)
                 action_dict[context.action_string] = action
-                self.result_queue.put(action.serialize())
+                # If we sent a preliminary action for a non-interactive behavior,
+                # send update to correct it
+                if sent_preliminary:
+                    update_dict = action.serialize()
+                    update_dict["type"] = "update"
+                    self.result_queue.put(update_dict)
+                else:
+                    self.result_queue.put(action.serialize())
                 return "Command execution successful. Current state: ", pseudo_take, pseudo_place
 
-        # Validate action
-        parent = parents.get(context.target, context.target)
+        # Determine navigation target for implicit movement
+        # For place actions: navigate to "at" object, not "target"
+        if context.place and context.at and len(context.at) > 0:
+            nav_target = context.at[0]
+        else:
+            nav_target = context.target
+
+        # Update state position to navigation target
+        parent = parents.get(nav_target, nav_target)
         parent_instance = objects.get(parent, {})
+        if parent_instance:
+            state["position_name"] = nav_target
+            state["position"] = format_coordinate(parent_instance["position"])
+
+        # Validate action (check if current actions allow this new action)
         message = self._validate_action(context, objects, parents, state, action_dict, parent_instance)
         if message:
             return message, False, False
 
         # Determine target and anchor for capture
-        if context.place and context.at and len(context.at) > 0:
-            target = context.at[0]
-        else:
-            target = context.target
-
+        target = nav_target
         parent = parents.get(target, target)
         anchor = self._determine_anchor(parent, action_dict, parents)
 
@@ -477,8 +455,59 @@ class PlanningBackend:
         action = self._context_to_action(context, objects)
         action_dict[context.action_string] = action
 
-        self.result_queue.put(action.serialize())
+        # Send update if we sent a preliminary action, otherwise send full action
+        if sent_preliminary:
+            update_dict = action.serialize()
+            update_dict["type"] = "update"
+            self.result_queue.put(update_dict)
+        else:
+            self.result_queue.put(action.serialize())
+
         return "Command execution successful. Current state: ", pseudo_take, pseudo_place
+
+    def _create_preliminary_action(self, context, nav_target):
+        """Create a preliminary action for immediate navigation.
+
+        This action has position=None which tells update_handler to
+        navigate to the object's bbox center.
+        """
+        return {
+            "type": "action",
+            "action": context.action_string,
+            "target": nav_target,
+            "at": context.at,
+            "by": context.by,
+            "touch": context.touch,
+            "long_range": context.long_range,
+            "facing": None,
+            "take": context.take,
+            "place": context.place,
+            "position": None,  # None triggers navigation to object bbox
+            "contact_points": context.contact_points or [],
+            "contact_targets": []
+        }
+
+    def _create_quick_preliminary_action(self, action_string, target):
+        """Create a quick preliminary action for immediate navigation.
+
+        This is called BEFORE VLM processing, so we don't know touch/take/place yet.
+        We assume it's an interactive action and let the update correct it if needed.
+        """
+        return {
+            "type": "action",
+            "action": action_string,
+            "target": target,
+            "at": None,
+            "by": None,
+            "touch": True,  # Assume interactive - will be corrected by update
+            "long_range": False,
+            "facing": None,
+            "take": False,
+            "place": False,
+            "position": None,  # None triggers navigation to object bbox
+            "contact_points": [],
+            "contact_targets": []
+        }
 
     def _handle_stop(self, command, requests, action_dict, state, pseudo_take, pseudo_place):
         """Handle stop command."""

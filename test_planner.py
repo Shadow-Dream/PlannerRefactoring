@@ -337,11 +337,13 @@ class PlannerTestRunner:
                 render_debug_view(env, agent_pos, path_copy, frame)
 
             # Send "done" requests for completed actions
+            # Only count frames after action reaches stage 2 (execution stage)
             completed_actions = []
-            for action, start_frame in list(action_frame_counter.items()):
+            for action, info in list(action_frame_counter.items()):
                 if action.startswith("Walking to "):
                     continue
 
+                start_frame = info.get("stage2_frame", info.get("start_frame", frame))
                 elapsed = frame - start_frame
                 if elapsed >= FRAMES_TO_COMPLETE_STAGE2:
                     planner.planner_request_queue.put({
@@ -376,9 +378,21 @@ class PlannerTestRunner:
                 if action_name and action_name not in active_actions:
                     active_actions.add(action_name)
                     if not action_name.startswith("Walking to "):
-                        action_frame_counter[action_name] = frame
+                        action_frame_counter[action_name] = {"start_frame": frame}
                     if self.verbose:
                         log.frame(frame, f"New action started: {action_name}")
+
+            # Update stage2_frame when action reaches execution stage
+            for todo in planner.todos:
+                action_name = todo.get("action", "")
+                stage = todo.get("stage", 0)
+                if action_name in action_frame_counter:
+                    info = action_frame_counter[action_name]
+                    # Stage 2 is reached when position is set and stage >= 2
+                    if stage >= 2 and "stage2_frame" not in info:
+                        info["stage2_frame"] = frame
+                        if self.verbose:
+                            log.frame(frame, f"Action reached stage 2: {action_name}")
 
             # Collect output snapshot
             snapshot = {

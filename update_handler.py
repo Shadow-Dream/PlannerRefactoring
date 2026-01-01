@@ -46,6 +46,9 @@ def process_todos(planner, env, objects, parents, position, change_state,
     action = merge_action([action_local_to_world(action, objects) for action in actions])
 
     def reset_stage():
+        # Clear the old path so a new one is calculated for the new target
+        planner.path = []
+        planner.navigating = False
         set_stage(0)
         action["stage"] = 0
         act = actions[0]
@@ -59,10 +62,15 @@ def process_todos(planner, env, objects, parents, position, change_state,
             del action["fulfilled_tick"]
 
     # Check if action or position changed significantly
-    if (action["action"] != planner.last_action
-        and action["position"] is not None
-        and (planner.last_position is None
-             or np.linalg.norm(np.array(action["position"])[:2] - np.array(planner.last_position)[:2]) > 0.2)):
+    # Reset when: (1) action changed with new position, OR (2) position changed from None to a value,
+    # OR (3) position changed significantly (>0.2m)
+    position_changed_significantly = (
+        action["position"] is not None and
+        (planner.last_position is None or
+         np.linalg.norm(np.array(action["position"])[:2] - np.array(planner.last_position)[:2]) > 0.2)
+    )
+
+    if position_changed_significantly:
         reset_stage()
 
     planner.last_action = action["action"]
@@ -112,7 +120,7 @@ def process_todos(planner, env, objects, parents, position, change_state,
                         target, set_stage, clear_pending, merge_ongoing_prompts,
                         change_state)
     elif action["stage"] == 1:
-        _process_stage_1(planner, env, action, merge_ongoing_prompts, set_stage,
+        _process_stage_1(planner, env, action, position, merge_ongoing_prompts, set_stage,
                         update_turn_tick, reset_turn_tick)
     elif action["stage"] == 2:
         _process_stage_2(planner, env, objects, position, action, actions, target,
@@ -158,8 +166,11 @@ def _process_stage_0(planner, env, objects, parents, position, action, actions,
                 set_stage(2)
         elif (action["position"] is None and len(planner.todos) > 1 and
               np.linalg.norm(np.array(position, dtype=np.float32) - np.array(last_position, dtype=np.float32)) < 0.5):
-            planner.todos.pop(0)
-            clear_pending()
+            # Only pop navigation-only actions (not touch/long_range interactions)
+            # Interaction actions with position=None are waiting for update
+            if not action.get("touch") and not action.get("long_range"):
+                planner.todos.pop(0)
+                clear_pending()
         else:
             # Perform path planning
             if planner.navigating:
@@ -257,7 +268,7 @@ def _perform_navigation(planner, env, objects, position, action, target,
         object_polygon = object_polygon.buffer(1, join_style="mitre")
         cur_point = sl.Point(position[:2])
         if object_polygon.contains(cur_point):
-            if planner.prompt != merge_ongoing_prompts("standing still"):
+            if planner.prompt != "A person is standing still.":
                 change_state = True
             is_decided = True
             target_position = position.tolist()
@@ -269,7 +280,7 @@ def _perform_navigation(planner, env, objects, position, action, target,
             planner.target_state_dict["position"] = {"traj": target_position}
             planner.target_state_dict["velocity"] = None
             planner.target_state_dict["heading"] = None
-            planner.prompt = merge_ongoing_prompts("standing still")
+            planner.prompt = "A person is standing still."
 
     if not is_decided and planner.path and len(planner.path) >= 1:
         _follow_path(planner, env, position, target_position, merge_ongoing_prompts, change_state)
@@ -280,7 +291,8 @@ def _perform_navigation(planner, env, objects, position, action, target,
         planner.target_state_dict["position"] = {"traj": target_position}
         planner.target_state_dict["velocity"] = torch.zeros_like(target_position)
         planner.target_state_dict["heading"] = None
-        planner.prompt = merge_ongoing_prompts("standing still")
+        # Use "standing still" directly during navigation wait, not action prompt
+        planner.prompt = "A person is standing still."
 
 
 def _follow_path(planner, env, position, target_position, merge_ongoing_prompts, change_state):
@@ -411,7 +423,8 @@ def _follow_path(planner, env, position, target_position, merge_ongoing_prompts,
             planner.target_state_dict["position"] = {"traj": target_position}
             planner.target_state_dict["velocity"] = torch.zeros_like(target_position)
             planner.target_state_dict["heading"] = None
-            planner.prompt = merge_ongoing_prompts("standing still")
+            # Use "standing still" directly during navigation
+            planner.prompt = "A person is standing still."
         elif is_final_segment and dist_to_final < 0.1:
             # Reached final destination
             target_position = list(position[:2]) + [0]
@@ -419,7 +432,8 @@ def _follow_path(planner, env, position, target_position, merge_ongoing_prompts,
             planner.target_state_dict["position"] = {"traj": target_position}
             planner.target_state_dict["velocity"] = torch.zeros_like(target_position)
             planner.target_state_dict["heading"] = None
-            planner.prompt = merge_ongoing_prompts("standing still")
+            # Use "standing still" directly during navigation
+            planner.prompt = "A person is standing still."
         else:
             env_target_position = env.target_state_dict[planner.env_id]["position"]
             env_prompt = env.actual_used_prompts[planner.env_id]
@@ -435,7 +449,8 @@ def _follow_path(planner, env, position, target_position, merge_ongoing_prompts,
             planner.target_state_dict["velocity"] = None
             planner.target_state_dict["real_target_position"] = real_target_position
             planner.target_state_dict["heading"] = None
-            planner.prompt = merge_ongoing_prompts("walking")
+            # Use "walking" directly during navigation
+            planner.prompt = "A person is walking."
     else:
         # Turn when not facing the waypoint
         target_position = position.tolist() + [0]
@@ -446,15 +461,20 @@ def _follow_path(planner, env, position, target_position, merge_ongoing_prompts,
         sub_angle = delta_angle / 4 if delta_angle < np.pi * (2 / 3) else (np.pi / 4 + delta_angle / 4)
         angle -= sub_angle
         planner.target_state_dict["heading"] = angle
-        planner.prompt = merge_ongoing_prompts("slowly turning around in place")
+        planner.prompt = "A person is slowly turning around in place."
 
 
-def _process_stage_1(planner, env, action, merge_ongoing_prompts, set_stage,
+def _process_stage_1(planner, env, action, position, merge_ongoing_prompts, set_stage,
                     update_turn_tick, reset_turn_tick):
-    """Process turning stage."""
-    planner.prompt = merge_ongoing_prompts("slowly turning around in place")
-    target_position = np.array(action["position"])
-    target_position = target_position.tolist() + [0]
+    """Process turning stage.
+
+    During turning, the agent should stay in place (at current position)
+    while rotating to face the target direction. Using the final action position
+    would cause the agent to walk towards it during turning.
+    """
+    planner.prompt = "A person is slowly turning around in place."
+    # Use CURRENT position, not final action position, so agent stays in place while turning
+    target_position = position.tolist() + [0]
     target_position = torch.tensor(target_position, dtype=torch.float32, device=env.device)
     planner.target_state_dict["position"] = {"traj": target_position}
     planner.target_state_dict["velocity"] = torch.zeros_like(target_position)
@@ -462,8 +482,8 @@ def _process_stage_1(planner, env, action, merge_ongoing_prompts, set_stage,
     delta_angle = (env.current_facing_angle[planner.env_id] - action["facing"] + np.pi) % (2 * np.pi) - np.pi
 
     if abs(delta_angle) < np.pi / 6:
-        if planner.prompt != merge_ongoing_prompts("standing still"):
-            planner.prompt = merge_ongoing_prompts("standing still")
+        if planner.prompt != "A person is standing still.":
+            planner.prompt = "A person is standing still."
         update_turn_tick()
         if action.get("turn_tick", 0) > 10:
             set_stage(2)
